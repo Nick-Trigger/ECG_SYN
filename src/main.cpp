@@ -61,7 +61,7 @@ void loop()
   // Empty!
 }
 
-// Modified Version of Dr. Palmeri's digilent-ecg-script.txt
+// Heavily Modified/Ported Version of Dr. Palmeri's digilent-ecg-script.txt
 // Generates an ECG Waveform
 // Original File in ../ref/digilent-ecg-script.txt
 // Original Repo: https://gitlab.oit.duke.edu/kits/BME-554L-001-Sp25/ecg-temp-ble-project/-/blob/main/testing/digilent-ecg-script.txt
@@ -70,30 +70,29 @@ void loop()
 void ecgWaveformTask(void *pvParameters)
 {
   const float r_wave_avg_amplitude = 1.0f;   // Average amplitude of the R-wave
-  const float amplitude_variance_pct = 0.0f; // Amplitude variance percentage (changes R and T wave amplitude)
+  const float amplitude_variance_pct = 0.1f; // Amplitude variance percentage (changes R and T wave amplitude)
 
   // ------------------------------------------
   // ECG Waveform Parameters
-  // AMP, START, WIDTH
+  // AMP, MIDDLE, WIDTH
   // ------------------------------------------
 
   // P-wave (atrial depolarization)
-  const float A_P = 0.25f, mu_P = 0.15f, sigma_P = 0.025f;  // P
-  const float A_Q = -0.12f, mu_Q = 0.33f, sigma_Q = 0.018f; // Q
-  const float A_R = 1.1f, mu_R = 0.355f, sigma_R = 0.022f;  // R
-  const float A_S = -0.3f, mu_S = 0.37f, sigma_S = 0.02f;  // S
-  const float A_T = 0.3f, mu_T = 0.9f, sigma_T = 0.05f;   // Q
-
-  // ST Bridge (smooths S-to-T transition)
-  const float A_ST = 0.08f, mu_ST = 0.45f, sigma_ST = 0.12f;
+  const float A_P = 0.15f, mu_P = 0.1f, sigma_P = 0.025f;  // P
+  const float A_Q = -0.2f, mu_Q = 0.28f, sigma_Q = 0.03f; // Q
+  const float A_R = 1.0f, mu_R = 0.31f, sigma_R = 0.015f;  // R
+  const float A_S = -0.3f, mu_S = 0.34f, sigma_S = 0.035f;   // S
+  const float A_T = 0.3f, mu_T = 0.55f, sigma_T = 0.05f;     // T
 
   float X = 0.0f;
   const float step = 1.0f / samplingRate;
+
   // Heart rate control
   const int heartRate = 60;                     // Target heart rate in beats per minute
   const float beatInterval = 60.0f / heartRate; // Interval between beats in seconds
   float timeSinceLastBeat = 0.0f;
-  float noiseAmplitude = 0.0f; // Noise amplitude pct
+  float noiseAmplitude = 0.1f; // Noise amplitude pct
+  float baselineAmplitude = 0.2f; // Baseline wander amplitude pct (breathing)
 
   while (1)
   {
@@ -107,11 +106,11 @@ void ecgWaveformTask(void *pvParameters)
     double R_wave = scaled_A_R * expf(-pow((X - mu_R), 2) / (2 * pow(sigma_R, 2)));
     double S_wave = A_S * expf(-pow((X - mu_S), 2) / (2 * pow(sigma_S, 2)));
     double T_wave = scaled_A_T * expf(-pow((X - mu_T), 2) / (2 * pow(sigma_T, 2)));
-    double ST_bridge = A_ST * expf(-pow((X - mu_ST), 2) / (2 * pow(sigma_ST, 2)));
-    double noise = noiseAmplitude * ((float)random(-50, 50) / 100.0f);
-    double baseline = 0.05 * sin(2 * PI * 0.33 * X); // 0.33 Hz baseline wander (breathing)
 
-    double waveform = P_wave + Q_wave + R_wave + S_wave + T_wave + ST_bridge + noise + baseline;
+    double noise = noiseAmplitude * ((float)random(-50, 50) / 100.0f);
+    double baseline = baselineAmplitude * sin(2 * PI * 0.33 * X); // 0.33 Hz baseline wander (breathing)
+
+    double waveform = P_wave + Q_wave + R_wave + S_wave + T_wave + noise + baseline;
 
     waveform *= r_wave_avg_amplitude;
 
@@ -133,7 +132,7 @@ void ecgWaveformTask(void *pvParameters)
     }
 
     Serial.print(">ecg:");
-    Serial.println(ecg_value);
+    Serial.println(waveform);
 
     vTaskDelay(pdMS_TO_TICKS(1));
   }
@@ -157,7 +156,7 @@ void outputTask(void *pvParameters)
     }
 
     // Clamp to ±2V range
-    const float voltage_range = 2.0f;
+    const float voltage_range = 2.5f;
     outputValue = constrain(outputValue, -voltage_range, voltage_range);
 
     if (outputValue >= 0.0f)
@@ -169,7 +168,7 @@ void outputTask(void *pvParameters)
     }
     else
     {
-      // Negative: map 0V to -2V to 0–255 (invert for op-amp)
+      // Negative: map 0V to -2V to 0–255 (invert w/op amp)
       uint8_t dac2_val = (uint8_t)((-outputValue / voltage_range) * 255.0f);
       dacWrite(DAC_CH2, dac2_val);
       dacWrite(DAC_CH1, 0); // Ensure positive channel is off
