@@ -81,8 +81,8 @@ void ecgWaveformTask(void *pvParameters)
   const float A_P = 0.25f, mu_P = 0.15f, sigma_P = 0.025f;  // P
   const float A_Q = -0.12f, mu_Q = 0.33f, sigma_Q = 0.018f; // Q
   const float A_R = 1.1f, mu_R = 0.355f, sigma_R = 0.022f;  // R
-  const float A_S = -0.2f, mu_S = 0.40f, sigma_S = 0.035f;  // S
-  const float A_T = 0.38f, mu_T = 0.58f, sigma_T = 0.05f;   // Q
+  const float A_S = -0.3f, mu_S = 0.37f, sigma_S = 0.02f;  // S
+  const float A_T = 0.3f, mu_T = 0.9f, sigma_T = 0.05f;   // Q
 
   // ST Bridge (smooths S-to-T transition)
   const float A_ST = 0.08f, mu_ST = 0.45f, sigma_ST = 0.12f;
