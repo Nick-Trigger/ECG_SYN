@@ -78,7 +78,7 @@ void setup()
       NULL,              // Task input parameter
       1,                 // Priority of the task
       &oled_task_handle, // Task handle
-      1);                // Core where the task should run
+      0);                // Core where the task should run
 
   // Init Screen
   setupBlinkLedTimer();
@@ -126,14 +126,14 @@ void ecgWaveformTask(void *pvParameters)
   const float A_Q = -0.2f, sigma_Q = 0.03f;  // Q
   const float A_S = -0.3f, sigma_S = 0.035f; // S
   const float A_R = 1.0f, sigma_R = 0.015f;  // R
-  const float A_T = 0.3f, sigma_T = 0.05f;   // T
+  const float A_T = 0.25f, sigma_T = 0.05f;   // T
 
   float X = 0.0f;
   const float step = 1.0f / samplingRate;
 
   // Heart rate control
   float timeSinceLastBeat = 0.0f;
-  float noiseAmplitude = 0.1f;    // Noise amplitude pct
+  float noiseAmplitude = 0.05f;    // Noise amplitude pct
   float baselineAmplitude = 0.2f; // Baseline wander amplitude pct (breathing)
 
   while (1)
@@ -278,15 +278,17 @@ void ioTask(void *pvParameters)
     int potAmpValue = analogRead(POT_AMP_PIN);
 
     // Map values
-    int mappedHR = map(potHRValue, 0, 4095, 30, 180);
+    int mappedHR = map(potHRValue, 0, 4095, 60, 200);
     float mappedAmp = map(potAmpValue, 0, 4095, 50, 150) / 100.0f;
 
     // Update global variables
     target_heart_rate = mappedHR;
     r_wave_avg_amplitude = mappedAmp;
 
+    float outputAmpDisp = mappedAmp * 2.0f;
+
     // Display values if changed
-    if (mappedHR != lastDisplayedHR || mappedAmp != lastDisplayedAmp)
+    if (mappedHR != lastDisplayedHR || outputAmpDisp != lastDisplayedAmp)
     {
       display.clearDisplay();
       display.setTextSize(2);
@@ -298,12 +300,13 @@ void ioTask(void *pvParameters)
       display.setTextSize(1);
       display.setCursor(0, 30);
       display.print("Amp: ");
-      display.print(mappedAmp, 2);
+      display.print(outputAmpDisp);
+      display.print(" mV");
 
       display.display();
 
       lastDisplayedHR = mappedHR;
-      lastDisplayedAmp = mappedAmp;
+      lastDisplayedAmp = outputAmpDisp;
     }
 
     vTaskDelay(pdMS_TO_TICKS(50)); // Refresh rate
