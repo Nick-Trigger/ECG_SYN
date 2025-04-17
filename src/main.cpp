@@ -9,6 +9,8 @@
 
 #define DAC_CH1 25
 #define DAC_CH2 26
+#define POT_HR_PIN 34  // heart rate pot
+#define POT_AMP_PIN 35 // amplitude pot
 #define LED_BUILTIN 2
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -21,7 +23,7 @@ void outputTask(void *pvParameters);
 void sendScreenStatus();
 void blinkLedCallback(TimerHandle_t xTimer);
 void setupBlinkLedTimer();
-void oledTask(void *pvParameters);
+void ioTask(void *pvParameters);
 void updateHeartRate(int newRate);
 
 // Threading
@@ -36,6 +38,8 @@ int samplingRate = 1000;            // Sampling rate in Hz
 int target_heart_rate = 60;         // Default 60 BPM
 unsigned long lastRWaveTime = 0;    // Heart Animation
 const int heartBlinkDuration = 200; // ms
+float r_wave_avg_amplitude = 1.0f;  // Average amplitude of the R-wave
+float lastDisplayedAmp = 0.0f; // Last displayed amplitude for OLED
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
@@ -68,11 +72,11 @@ void setup()
       1);                  // Core where the task should run
 
   xTaskCreatePinnedToCore(
-      oledTask,          // Function to implement the task
+      ioTask,            // Function to implement the task
       "OLED Display",    // Name of the task
-      10000,             // Stack size in bytes
+      4096,             // Stack size in bytes
       NULL,              // Task input parameter
-      2,                 // Priority of the task
+      1,                 // Priority of the task
       &oled_task_handle, // Task handle
       1);                // Core where the task should run
 
@@ -108,7 +112,6 @@ void loop()
 
 void ecgWaveformTask(void *pvParameters)
 {
-  const float r_wave_avg_amplitude = 1.0f;   // Average amplitude of the R-wave
   const float amplitude_variance_pct = 0.1f; // Amplitude variance percentage (changes R and T wave amplitude)
 
   const float RR = 60.0f / target_heart_rate;
@@ -259,7 +262,7 @@ void blinkLedCallback(TimerHandle_t xTimer)
   ledState = !ledState;
 }
 
-void oledTask(void *pvParameters)
+void ioTask(void *pvParameters)
 {
   display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
   display.clearDisplay();
@@ -270,36 +273,37 @@ void oledTask(void *pvParameters)
 
   while (1)
   {
-    // Detect R-wave (simple threshold)
-    float currentECG = 0.0;
-    if (xSemaphoreTake(ecg_mutex, portMAX_DELAY))
+    // Read potentiometers
+    int potHRValue = analogRead(POT_HR_PIN);
+    int potAmpValue = analogRead(POT_AMP_PIN);
+
+    // Map values
+    int mappedHR = map(potHRValue, 0, 4095, 30, 180);
+    float mappedAmp = map(potAmpValue, 0, 4095, 50, 150) / 100.0f;
+
+    // Update global variables
+    target_heart_rate = mappedHR;
+    r_wave_avg_amplitude = mappedAmp;
+
+    // Display values if changed
+    if (mappedHR != lastDisplayedHR || mappedAmp != lastDisplayedAmp)
     {
-      currentECG = ecg_value;
-      xSemaphoreGive(ecg_mutex);
-    }
-
-    // Update heart blink
-    if (currentECG > 0.8f)
-    { // Adjust threshold based on your R-wave amplitude
-      lastRWaveTime = millis();
-    }
-
-    // Update display only when needed
-    if (millis() - lastRWaveTime < heartBlinkDuration ||
-        target_heart_rate != lastDisplayedHR)
-    {
-
       display.clearDisplay();
-
-      // Display heart rate
       display.setTextSize(2);
       display.setTextColor(SSD1306_WHITE);
-      display.setCursor(0, 25);
-      display.print(target_heart_rate);
+      display.setCursor(0, 0);
+      display.print(mappedHR);
       display.print(" BPM");
 
+      display.setTextSize(1);
+      display.setCursor(0, 30);
+      display.print("Amp: ");
+      display.print(mappedAmp, 2);
+
       display.display();
-      lastDisplayedHR = target_heart_rate;
+
+      lastDisplayedHR = mappedHR;
+      lastDisplayedAmp = mappedAmp;
     }
 
     vTaskDelay(pdMS_TO_TICKS(50)); // Refresh rate
