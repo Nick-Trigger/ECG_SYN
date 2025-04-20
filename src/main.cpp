@@ -39,7 +39,7 @@ int target_heart_rate = 60;         // Default 60 BPM
 unsigned long lastRWaveTime = 0;    // Heart Animation
 const int heartBlinkDuration = 200; // ms
 float r_wave_avg_amplitude = 1.0f;  // Average amplitude of the R-wave
-float lastDisplayedAmp = 0.0f; // Last displayed amplitude for OLED
+float lastDisplayedAmp = 0.0f;      // Last displayed amplitude for OLED
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
@@ -74,7 +74,7 @@ void setup()
   xTaskCreatePinnedToCore(
       ioTask,            // Function to implement the task
       "OLED Display",    // Name of the task
-      4096,             // Stack size in bytes
+      4096,              // Stack size in bytes
       NULL,              // Task input parameter
       1,                 // Priority of the task
       &oled_task_handle, // Task handle
@@ -114,58 +114,48 @@ void ecgWaveformTask(void *pvParameters)
 {
   const float amplitude_variance_pct = 0.1f; // Amplitude variance percentage (changes R and T wave amplitude)
 
-  const float RR = 60.0f / target_heart_rate;
-  const float QT = 0.4f * sqrt(RR); // Bazett's formula (QTc=400ms)
-
-  // ------------------------------------------
-  // ECG Waveform Parameters
-  // A_* = AMP,  mu_* = MIDDLE, sigma_* = WIDTH
-  // ------------------------------------------
-
-  const float A_P = 0.15f, sigma_P = 0.025f; // P
-  const float A_Q = -0.2f, sigma_Q = 0.03f;  // Q
-  const float A_S = -0.3f, sigma_S = 0.035f; // S
-  const float A_R = 1.0f, sigma_R = 0.015f;  // R
-  const float A_T = 0.25f, sigma_T = 0.05f;   // T
+  const float A_P = 0.15f, sigma_P = 0.05f;  // P
+  const float A_Q = -0.25f, sigma_Q = 0.02f; // Q
+  const float A_S = -0.35f, sigma_S = 0.02f; // S
+  const float A_R = 1.0f, sigma_R = 0.015f;   // R
+  const float A_T = 0.25f, sigma_T = 0.04f;  // T
 
   float X = 0.0f;
   const float step = 1.0f / samplingRate;
 
-  // Heart rate control
   float timeSinceLastBeat = 0.0f;
-  float noiseAmplitude = 0.05f;    // Noise amplitude pct
-  float baselineAmplitude = 0.2f; // Baseline wander amplitude pct (breathing)
+  float noiseAmplitude = 0.05f;   // Noise amplitude pct
+  float baselineAmplitude = 0.0f; // Baseline wander amplitude pct (breathing)
+
+  // For baseline correction
+  double baseline_offset = 0.0f;
+
+  // For smooth amplitude variation
+  float amp_variation_phase = 0.0f;
 
   while (1)
   {
-    // Random Amplitudes
-    float varianceSeed = ((float)random(-50, 50) / 100.0f);
-    float scaled_A_R = A_R * (1.0f + (amplitude_variance_pct * varianceSeed));
-    float scaled_A_T = A_T * (1.0f + (amplitude_variance_pct * varianceSeed));
-
-    // Waveform Timing Params
-    const float RR = 60.0f / target_heart_rate;
-    const float beatInterval = RR;
-    const float QT = 0.4f * sqrt(RR);
+    // Heart rate control
+    float RR = 60.0f / target_heart_rate;
+    float beatInterval = RR;
+    float QT = 0.4f * sqrt(RR);
 
     // Wave Positions
-    float mu_P = 0.15f * RR;
-    float mu_Q = mu_P + 0.16f * sqrt(RR);
-    float mu_S = mu_Q + 0.10f;
-    float mu_R = (mu_Q + mu_S) / 2.0f;
-    float mu_T = mu_Q + QT - 0.05f;
+    float mu_P = 0.15f + sigma_P / 2;
+    float mu_Q = mu_P + sigma_P / 2 + sigma_Q / 2 + 0.02f;
+    float mu_R = mu_Q + sigma_Q / 2 + sigma_R / 2 + 0.01f;
+    float mu_S = mu_R + sigma_R / 2 + sigma_S / 2 + 0.02f;
+    float mu_T = mu_Q + QT - sigma_T / 2 - 0.05f;
 
-    // Boundary checks
-    if (mu_T + 3 * sigma_T > RR)
-      mu_T = RR - 3 * sigma_T - 0.02f;
-    if (mu_Q < mu_P + 0.12f)
-    {
-      mu_Q = mu_P + 0.12f;
-      mu_S = mu_Q + 0.10f;
-      mu_R = (mu_Q + mu_S) / 2.0f;
-    }
+    // Smooth amplitude variation (slow sine wave)
+    amp_variation_phase += step * 0.5f; // 0.5 Hz variation speed
+    if (amp_variation_phase > 2 * PI)
+      amp_variation_phase -= 2 * PI;
+    float amp_variation = sinf(amp_variation_phase);
+    float scaled_A_R = A_R * (1.0f + amplitude_variance_pct * amp_variation);
+    float scaled_A_T = A_T * (1.0f + amplitude_variance_pct * amp_variation);
 
-    // Generate ECG waveform
+    // Generate ECG waveform at current X
     double P_wave = A_P * expf(-pow((X - mu_P), 2) / (2 * pow(sigma_P, 2)));
     double Q_wave = A_Q * expf(-pow((X - mu_Q), 2) / (2 * pow(sigma_Q, 2)));
     double R_wave = scaled_A_R * expf(-pow((X - mu_R), 2) / (2 * pow(sigma_R, 2)));
@@ -177,12 +167,34 @@ void ecgWaveformTask(void *pvParameters)
     double baseline = baselineAmplitude * sin(2 * PI * 0.33 * X); // 0.33 Hz baseline wander (breathing)
 
     // Create The Waveform
-    double waveform = P_wave + Q_wave + R_wave + S_wave + T_wave + noise + baseline;
+    double waveform = P_wave + Q_wave + R_wave + S_wave + T_wave;
 
-    // Normalize the waveform to the average amplitude of the R-wave
+    // Baseline correction: calculate offset at start of each cycle
+    if (X == 0.0f)
+    {
+      // Compute waveform at start (X=0) and end (X=beatInterval)
+      double P0 = A_P * expf(-pow((0.0f - mu_P), 2) / (2 * pow(sigma_P, 2)));
+      double Q0 = A_Q * expf(-pow((0.0f - mu_Q), 2) / (2 * pow(sigma_Q, 2)));
+      double R0 = scaled_A_R * expf(-pow((0.0f - mu_R), 2) / (2 * pow(sigma_R, 2)));
+      double S0 = A_S * expf(-pow((0.0f - mu_S), 2) / (2 * pow(sigma_S, 2)));
+      double T0 = scaled_A_T * expf(-pow((0.0f - mu_T), 2) / (2 * pow(sigma_T, 2)));
+      double start_val = P0 + Q0 + R0 + S0 + T0;
+
+      double Pend = A_P * expf(-pow((beatInterval - mu_P), 2) / (2 * pow(sigma_P, 2)));
+      double Qend = A_Q * expf(-pow((beatInterval - mu_Q), 2) / (2 * pow(sigma_Q, 2)));
+      double Rend = scaled_A_R * expf(-pow((beatInterval - mu_R), 2) / (2 * pow(sigma_R, 2)));
+      double Send = A_S * expf(-pow((beatInterval - mu_S), 2) / (2 * pow(sigma_S, 2)));
+      double Tend = scaled_A_T * expf(-pow((beatInterval - mu_T), 2) / (2 * pow(sigma_T, 2)));
+      double end_val = Pend + Qend + Rend + Send + Tend;
+
+      baseline_offset = (start_val + end_val) / 2.0;
+    }
+
+    waveform -= baseline_offset; // Remove DC offset for seamless cycles
+    waveform += noise + baseline;
     waveform *= r_wave_avg_amplitude;
 
-    // Protect shared variable with mutexS
+    // Protect shared variable with mutex
     if (xSemaphoreTake(ecg_mutex, portMAX_DELAY))
     {
       ecg_value = waveform;
@@ -192,10 +204,9 @@ void ecgWaveformTask(void *pvParameters)
     // Timing control
     X += step;
     timeSinceLastBeat += step;
-
     if (timeSinceLastBeat >= beatInterval)
     {
-      X -= beatInterval; // Carry over fractional timing error
+      X = 0.0f; // Reset to start of cycle (prevents drift)
       timeSinceLastBeat = 0.0f;
     }
 
